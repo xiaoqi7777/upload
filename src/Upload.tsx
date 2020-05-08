@@ -1,9 +1,6 @@
-import React,{ChangeEvent, useState, useEffect} from 'react';
-import {Row,Col,Input,Button, message,Table,Progress} from 'antd';
+import React, { ChangeEvent, useState,useEffect } from 'react';
+import { Row, Col, Input, Button, message, Progress, Table } from 'antd'
 import { request } from './utils'
-// 100M 
-// const DEFAULT_SIZE = 1024 * 1024 * 100;
-// 256k
 const DEFAULT_SIZE = 1024 * 1024 * 20
 enum UploadStatus{
   INIT,
@@ -23,9 +20,9 @@ interface Upload{
   filename:string;
   size:number
 }
-function Upload(){
+function Upload() {
   let [uploadStatus,setUploadStatus] = useState<UploadStatus>(UploadStatus.INIT)
-  let [currentFile,setCurrentFile] = useState<File>();
+  let [currentFile, setCurrentFile] = useState<File>();
   let [objectURL,setObjectURL] = useState<string>();
   let [hashPercent,setHashPercent] = useState<number>(0);
   let [filename,setFilename] = useState<string>();
@@ -33,95 +30,80 @@ function Upload(){
   let [partList,setPartList] = useState<Part[]>([]);
   useEffect(()=>{
     if(!currentFile) return
-    // 1、window.URL.createObjectURL 可能导致内存泄露
-    // 通过对象创建url地址 url是一个二进制地址
-    let objectURL = window.URL.createObjectURL(currentFile);
-    setObjectURL(objectURL)
-    // 组件销毁的时候 才执行 释放使用的资源
-    return () => window.URL.revokeObjectURL(objectURL)
-    // 2、FileReader 建议用下面这个
-    // const reader = new FileReader()
-    // reader.addEventListener('load',() => setObjectURL(reader.result as string))
-    // reader.readAsDataURL(currentFile);
+    const reader = new FileReader()
+    reader.addEventListener('load',() => setObjectURL(reader.result as string))
+    reader.readAsDataURL(currentFile);
   },[currentFile])
-  function handleChange(event:ChangeEvent<HTMLInputElement>){
-    let file:File = event.target.files![0]
-    console.log(file)
-    setCurrentFile(file)
+
+  function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    // event.target.files![0] 就是上传文件的信息
+    setCurrentFile(event.target.files![0])
   }
-  function calculateHash(partList:Part[]):Promise<String>{
-    return new Promise((resolve,reject)=>{
-      // /hash.js 他会找public/hash的位子
-      let worker = new Worker('/hash.js');
-      worker.postMessage({partList});
-      worker.onmessage = function(event){
-        let { percent, hash} = event.data
-        console.log('percent',percent)
-        setHashPercent(percent)
-        if(hash){
-          resolve(hash);
-        }
-      }
-    })
-  }
-  function reset() {
-    setUploadStatus(UploadStatus.INIT);
-    setHashPercent(0);
-    setPartList([]);
-    setFilename('');
-  }
-  async function handleUpload(){
-    if(!currentFile){
+  async function handleUpload() {
+    if (!currentFile) {
       return message.error(`你尚未选择文件`)
     }
-    if(!allowUpload(currentFile)){
+    if (!allowUpload(currentFile)) {
       return message.error(`不支持本类型文件上传`)
     }
+    // 弹出进度条
     setUploadStatus(UploadStatus.UPLOADING)
-    // 分片上传
-    let partList:Part[] = createChunks(currentFile);
-    // 先计算这个对象的哈希值 秒传的功能 通过webworker子进程来计算哈希
+    // 分片上传 createChunks根据切片的大小 将文件进行切割
+    let partList:Part[] = createChunks(currentFile)
+    // 将切割的文件 上传 hash计算 利用Worker创建一个子经常进行计算
     let fileHash = await calculateHash(partList)
     let lastDoIndex = currentFile.name.lastIndexOf('.')
     let extName = currentFile.name.slice(lastDoIndex)
-    let filename = `${fileHash}${extName}`;// hash.jpg
+    let filename = `${fileHash}${extName}`
     setFilename(filename)
     partList = partList.map(({chunk,size,loaded,percent},index)=>({
       filename, // hash.jpg
       chunk_name:`${filename}-${index}`,
       chunk,
-      size:size,
+      size,
       loaded:0,
       percent:0
     }))
     setPartList(partList);
-    // 上传 
-    console.log('===>')
+    console.log('所有的切片集合',partList)
     await uploadParts(partList,filename)
-    // 图片上传  FormData
-    // const formData = new FormData();
-    // formData.append('chunk',currentFile);//添加文件 字段名 chunk
-    // formData.append('filename',currentFile.name);// 图片的文件名字
-    // let result = await request({
-    //   url:'/upload',
-    //   method:'POST',
-    //   data:formData
-    // });
-    // console.log('result',result)
-    // message.info('上传成功');
   }
+  function calculateHash(partList:Part[]){
+    return new Promise((resolve:Function,reject:Function)=>{
+      // /hash.js 他会找public/hash的位子
+      let worker = new Worker('/hash.js')
+      worker.postMessage({partList})
+      worker.onmessage = function(event){
+        let {percent,hash} = event.data
+        setHashPercent(percent)
+        // 有hash 就说明切割完成
+        if(hash){
+          resolve(hash)
+        }
+      }
+    })
+  }
+  // verify 功能就是查看数据是否上传完成  已经返回已上传的数据大小 和 名字(当刷新页面的时候 会接着传递)
   async function verify(filename:string){
-    return await request({
+    return  request({
       url:`/verify/${filename}`,
       method:'get'
     })
   }
-  // 上传文件
   async function uploadParts(partList:Part[],filename:string){
-    let { needUpload, uploadList } = await verify(filename)
+    // partList 是所有的切片
+    // uploadList 已经上传过的所有信息
+    let data = await verify(filename)
+    console.log('uploadList',data)
+    let  { needUpload,uploadList } = data
+
+    console.log('needUpload',needUpload)
     if (!needUpload){
+      reset()
       return message.success('秒传成功')
     }
+    // uploadList 已经上传的数据包信息
+    // partList 总的数据包
     let requests = createRequests(partList,uploadList,filename)
     await Promise.all(requests)
     await request({
@@ -130,54 +112,63 @@ function Upload(){
     })
     message.success('上传成功');
     reset();
+  } 
+  function reset() {
+    setUploadStatus(UploadStatus.INIT);
+    setHashPercent(0);
+    setPartList([]);
+    setFilename('');
   }
   function createRequests(partList:Part[],uploadList:Upload[],filename:string){
-    return partList.filter((part:Part)=> {
-      // uploadList 已经上传过的列表
-      let uploadFile = uploadList.find(item=>item.filename === part.chunk_name);
-      console.log('uploadFile=>',uploadFile)
-      if(!uploadFile){
-        part.loaded = 0;// 已经上传的字节数0
-        part.percent = 0;// 已经上传的百分比就是0 分片上传过的半分比就是0
-        return true
-      }
-      console.log('uploadFile.size',uploadFile.size,part.chunk.size)
-      if (uploadFile.size < part.chunk.size){
-        part.loaded = uploadFile.size; // 已经上传的字节数
-        console.log('part.loaded',part.loaded)
-        part.percent =Number((part.loaded/part.chunk.size * 100).toFixed(2)); // 已经上传的百分比
-        return true;
-      }
-      // 上传完成
-      return false
-    }).map((part:Part)=>request({
-      url:`/upload/${filename}/${part.chunk_name}/${part.loaded}`,// 请求的URL地址
-      method:'POST',
-      // application/octet-stream 字节流
-      headers:{'Content-Type':'application/octet-stream'},
-      // 发送的时候 将xhr实例 放到part内
-      setXHR:(xhr:XMLHttpRequest) => part.xhr = xhr,
-      onProgress: (event:ProgressEvent) => {
-        console.log('onProgress=>')
-        part.percent = Number(((part.loaded! + event.loaded!)/part.chunk.size*100).toFixed(2))
-        // 页面刷新
-        setPartList([...partList])
-      },
-      // 请求体的格式
-      data:part.chunk
-    }))
+    return partList.filter((part:Part)=>{
+        part.loaded = part.loaded?part.loaded:0;
+        // uploadList 已经上传过的列表
+        let uploadFile = uploadList.find(item=>item.filename === part.chunk_name);
+        // 没有上传过 直接退出
+        if(!uploadFile){
+          part.loaded = 0;// 已经上传的字节数0
+          part.percent = 0;// 已经上传的百分比就是0 分片上传过的半分比就是0
+          return true
+        }
+        // 过滤已经上传过的
+        if(uploadFile.size < part.chunk.size){
+          part.loaded = uploadFile.size;// 已经上传的字节数0
+          part.percent = Number((part.loaded/part.chunk.size * 100).toFixed(2));// 已经上传的百分比就是0 分片上传过的半分比就是0
+          return true
+        }
+        return false
+      }).map((part:Part)=>request({
+        url:`/upload/${filename}/${part.chunk_name}/${part.loaded}`,
+        method:'POST',
+        // application/octet-stream 字节流
+        headers:{'Content-Type':'application/octet-stream'},
+        // 在发送请的时候 将xhr保存在partList中
+        setXHR:(xhr:XMLHttpRequest) => part.xhr = xhr,
+        onProgress: (event:ProgressEvent) => {
+          part.percent = Number(((part.loaded! + event.loaded!)/part.chunk.size*100).toFixed(2))
+          // 页面刷新
+          setPartList([...partList])
+        },
+        data:part.chunk
+      })
+    )
   }
-  async function handlePause(){
+  // 暂停
+  function handlePause(){
+    // 如果请求已被发送，则立刻中止请求。
     partList.forEach((part:Part) => part.xhr && part.xhr.abort())
     setUploadStatus(UploadStatus.PAUSE)
   }
+  // 恢复
   async function handleResume(){
     setUploadStatus(UploadStatus.UPLOADING)
+    // 发送请求
     await uploadParts(partList,filename!) 
   }
   // 总进度
   let totalPercent = partList.length>0 ? partList.reduce(
     (a:number,b:Part)=>a+b.percent!,0)/partList.length  :0
+
   const columns = [
     {
       title:'切片名称',
@@ -195,7 +186,7 @@ function Upload(){
       }
     }
   ]
-  let uploadProgress =uploadStatus !== UploadStatus.INIT ?(
+  let uploadProgress = uploadStatus !== UploadStatus.INIT ? (
     <>
      <Row>
         <Col span={4}>
@@ -224,50 +215,42 @@ function Upload(){
   return (
     <>
       <Row>
+        {/* 按钮点击 */}
         <Col span={12}>
-          <Input type="file" style={{width:300}} onChange={handleChange}/>
-          <Button type="primary" onClick={handleUpload} style={{marginLeft:10}}>上传图片</Button>
+          <Input type='file' style={{ width: 300 }} onChange={handleChange}></Input>
+          <Button type="primary" onClick={handleUpload} style={{ marginLeft: 10 }}>上传图片</Button>
           {
             uploadStatus === UploadStatus.UPLOADING && <Button type="primary" onClick={handlePause} style={{marginLeft:10}}>暂停</Button>
           }
           {
             uploadStatus === UploadStatus.PAUSE && <Button type="primary" onClick={handleResume} style={{marginLeft:10}}>恢复</Button>
           }
-          
         </Col>
+        {/* 图片预览 */}
         <Col span={12}>
-            {objectURL&&<img src={objectURL} style={{width:100}}/>}
+          {objectURL && <img src={objectURL} style={{width:100}} alt='视频'/>}
         </Col>
       </Row>
       {uploadProgress}
     </>
   )
 }
-
+function allowUpload(currentFile: File) {
+  let fileType = currentFile.type;// type: "image/jpeg"
+  let validFileTypes = ["image/jpeg", "image/png", "image/gif", "video/mp3", "video/avi"]
+  let isLessThan2G = currentFile.size < 1024 * 1024 * 1024 * 2
+  return validFileTypes.includes(fileType) && isLessThan2G
+}
 function createChunks(file:File):Part[]{
-  let current = 0;
+  let current = 0
   let partList:Part[] = []
-  while(current < file.size){
-    let chunk = file.slice(current,current + DEFAULT_SIZE);
-    console.log('==>')
-    partList.push({ chunk, size: chunk.size})
+  while(current<file.size){
+    let chunk = file.slice(current,current+DEFAULT_SIZE)
+    partList.push({chunk,size:chunk.size})
     current += DEFAULT_SIZE
   }
   return partList
 }
-// File是ts类型  他继承Blob
-function allowUpload(file:File){
-  let type = file.type;// type: "image/jpeg"
-  let validFileTypes = ["image/jpeg","image/png","image/gif","video/mp3","video/avi"]
-  if(!validFileTypes.includes(type)){
-    message.error(`不支持此类文件上传`)
-  }
-  // 文件大小的单位是字节 1024bytes = 1K*1024 = 1M*1024 = 1G*2 = 2G 
-  const isLessThan2G = file.size < 1024*1024*1024*2
-  if(!isLessThan2G){
-    message.error(`上传的图片不能大于2G`)
-  }
-  return validFileTypes&&isLessThan2G
-}
+
 
 export default Upload

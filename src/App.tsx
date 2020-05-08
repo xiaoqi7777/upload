@@ -1,11 +1,23 @@
-import React from 'react';
+import React, { useState } from 'react';
+import {request} from './utils'
 import Upload from './Upload'
-function App(){
+function App() {
+  let  [number,setNumber]=useState<number>(0)
+  async function btn(){
+   let rs = await request({
+     url:'/test/123?a=1'
+   })
+   setNumber(1)
+   console.log('rs',rs)
+  }
   return (
-    <div className='app'>
-      <Upload></Upload>
-    </div>
-  )
-}
+    <div className="App">
+      <button onClick={btn}>接口测试</button>
+      app=> {number}
 
-export default App
+      <br/>
+      <Upload/>
+    </div>
+  );
+}
+export default App;
