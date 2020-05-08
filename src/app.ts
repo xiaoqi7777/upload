@@ -1,24 +1,40 @@
-// {Request,Response,NextFunction} 文件声明
 import express,{Request,Response,NextFunction} from 'express';
-import logger from 'morgan';
+import multiparty from 'multiparty';
+import cors from 'cors';
 import {INTERNAL_SERVER_ERROR} from 'http-status-codes';//500
 import createError from 'http-errors';
-import cors from 'cors';
-import path from 'path';
+import {mergeChunks, PUBLIC_DIR,TEMP_DIR} from './utils'
+// 把原生的fs包装加强
 import fs from 'fs-extra';
-import {mergeChunks, PUBLIC_DIR} from './utils'
-// import multiparty from 'multiparty';//文件上传
-import { TEMP_DIR } from './utils'
-// const PUBLIC_DIR = path.resolve(__dirname,'public')
-let app = express();
-app.use(logger('dev'));
+import path from 'path';
+
+let app = express()
+app.use(cors())
 app.use(express.json());
 app.use(express.urlencoded({extended:true}))
-app.use(cors());
 app.use(express.static(path.resolve(__dirname,'public')));
 
-// filename chunk_name 是文件名
-app.post('/upload/:filename/:chunk_name',async function(req:Request, res:Response, _next:NextFunction){
+// 测试接口
+app.get('/test/:name',(req:Request,res:Response,next:NextFunction)=>{
+  let {name} = req.params;
+  console.log('==>',name)
+  res.json({success:true})
+  next()
+})
+// 图片上传 利用multiparty
+app.post('/upload',(req:Request,res:Response,next:NextFunction)=>{
+  let form = new multiparty.Form();
+  form.parse(req,async(err:any,fields,files)=>{
+    if(err){
+      return next(err)
+    }
+    let filename = fields.chunk_name[0];//xxx.jpg
+    let chunk = files.chunk[0];// 文件流
+    await fs.move(chunk.path,path.resolve(PUBLIC_DIR,filename));
+    res.json({success:true})
+  })
+})
+app.post('/upload/:filename/:chunk_name/:start',async function(req:Request, res:Response, _next:NextFunction){
   let { filename, chunk_name } = req.params; 
   let start:number = Number(req.params.start)
   let chunk_dir = path.resolve(TEMP_DIR,filename)  
@@ -42,29 +58,30 @@ app.post('/upload/:filename/:chunk_name',async function(req:Request, res:Respons
   })
   req.pipe(ws);
 })
-app.get('/merge/:filename',async function(req:Request, res:Response, _next:NextFunction){
-  let { filename } = req.params
-  await mergeChunks(filename)
-  res.json({success:true})
-})
 // 每次先计算hash值
 app.get('/verify/:filename',async function(req:Request, res:Response, _next:NextFunction):Promise<any>{
   let { filename } = req.params;
-  let filePath = path.resolve(PUBLIC_DIR,filename)
-  let exitFile = await fs.pathExists(filePath)
+  let filePath = path.resolve(PUBLIC_DIR,filename);
+  let exitFile = await fs.pathExists(filePath);
+  console.log('文件是否合并',exitFile);
+  // 只有传完 才会进去这 因为只有最后一个hash进行合并的时候 `PUBLIC_DIR`才会有数据
   if (exitFile){
     // 已经完整上传过了
-    return {
+    res.json ({
       success:true,
       needUpload:false,// 因为已经上传过了,所以不在上传了,可以实现秒传
-    }
+    })
+    return
   }
+  // 片段
   let tempDir = path.resolve(TEMP_DIR,filename);
   let exist = await fs.pathExists(tempDir)
   let uploadList:any[] = []
+  // 如果已经传入了片段 
   if (exist) {
     uploadList = await fs.readdir(tempDir)
     uploadList = await Promise.all(uploadList.map(async (filename:string)=>{
+      // 读取 已经上传的文件信息 返回
       let stat = await fs.stat(path.resolve(tempDir, filename));
       return {
         filename,
@@ -78,33 +95,11 @@ app.get('/verify/:filename',async function(req:Request, res:Response, _next:Next
     uploadList// 已经上传的文件列表
   })
 })
-// app.post('/upload',async function(req:Request, res:Response, next:NextFunction){
-//   let form = new multiparty.Form();
-//   form.parse(req, async(err:any,fields,files) => {
-//     if(err){
-//       return next(err);
-//     }
-//     let filename = fields.filename[0];//23213.jpg
-//     let chunk = files.chunk[0];// 文件流
-//     await fs.move(chunk.path,path.resolve(PUBLIC_DIR,filename));
-//     console.log('fields',fields)
-//     console.log('files',files)
-//     res.json({success:true})
-//   })
-// })
-/*
-fields { filename: [ '23213.jpg' ] }
-files { chunk:
-   [ { fieldName: 'chunk',
-       originalFilename: '23213.jpg',
-       path:
-        'C:\\Users\\songge\\AppData\\Local\\Temp\\j_o0rbpdCBH3aWy6-THQu3ii.jpg',
-       headers: [Object],
-       size: 28484 } 
-      ] 
-    }
-*/
-
+app.get('/merge/:filename',async function(req:Request, res:Response, _next:NextFunction){
+  let { filename } = req.params
+  await mergeChunks(filename)
+  res.json({success:true})
+})
 // 没有路由匹配 会进入这
 app.use(function (_req:Request, _res:Response,next:NextFunction){
   next(createError(404))
@@ -117,12 +112,4 @@ app.use(function( error:any, _req:Request, res:Response, _next:NextFunction){
     error
   });
 });
-export default app;
-
-/*
-  1、传递cookie 
-    1、origin不能用* 
-    2、xhr.withCredential:include
-    3、all:true(服务器)
-
-*/
+export default app
